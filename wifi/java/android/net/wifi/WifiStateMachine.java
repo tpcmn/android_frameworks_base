@@ -127,6 +127,7 @@ public class WifiStateMachine extends StateMachine {
     private final boolean mBackgroundScanSupported;
 
     private String mInterfaceName;
+    private String mSoftapInterfaceName;
     /* Tethering interface could be seperate from wlan interface */
     private String mTetherInterfaceName;
 
@@ -575,7 +576,7 @@ public class WifiStateMachine extends StateMachine {
 
         mContext = context;
         mInterfaceName = wlanInterface;
-
+        mSoftapInterfaceName = SystemProperties.get("wifi.ap.interface", mInterfaceName);
         mNetworkInfo = new NetworkInfo(ConnectivityManager.TYPE_WIFI, 0, NETWORKTYPE, "");
         mBatteryStats = IBatteryStats.Stub.asInterface(ServiceManager.getService("batteryinfo"));
 
@@ -761,7 +762,6 @@ public class WifiStateMachine extends StateMachine {
     public void setWifiEnabled(boolean enable) {
         mLastEnableUid.set(Binder.getCallingUid());
         if (enable) {
-            WifiNative.setMode(0);
             /* Argument is the state that is entered prior to load */
             sendMessage(obtainMessage(CMD_LOAD_DRIVER, WIFI_STATE_ENABLING, 0));
             sendMessage(CMD_START_SUPPLICANT);
@@ -778,7 +778,6 @@ public class WifiStateMachine extends StateMachine {
     public void setWifiApEnabled(WifiConfiguration wifiConfig, boolean enable) {
         mLastApEnableUid.set(Binder.getCallingUid());
         if (enable) {
-            WifiNative.setMode(1);
             /* Argument is the state that is entered prior to load */
             sendMessage(obtainMessage(CMD_LOAD_DRIVER, WIFI_AP_STATE_ENABLING, 0));
             sendMessage(obtainMessage(CMD_START_AP, wifiConfig));
@@ -1346,15 +1345,7 @@ public class WifiStateMachine extends StateMachine {
         if (countryCode != null && !countryCode.isEmpty()) {
             setCountryCode(countryCode, false);
         } else {
-            // On wifi-only devices, some drivers don't find hidden SSIDs unless DRIVER COUNTRY
-            // is called. Use the default country code to ping the driver.
-            ConnectivityManager cm =
-                    (ConnectivityManager)mContext.getSystemService(Context.CONNECTIVITY_SERVICE);
-            if (!cm.isNetworkSupported(ConnectivityManager.TYPE_MOBILE)) {
-                setCountryCode(mCountryCode, false);
-            }
-
-            // In other case, mcc tables from carrier do the trick of starting up the wifi driver
+            //use driver default
         }
     }
 
@@ -1887,12 +1878,12 @@ public class WifiStateMachine extends StateMachine {
         new Thread(new Runnable() {
             public void run() {
                 try {
-                    mNwService.startAccessPoint(config, mInterfaceName);
+                    mNwService.startAccessPoint(config, mSoftapInterfaceName);
                 } catch (Exception e) {
                     loge("Exception in softap start " + e);
                     try {
-                        mNwService.stopAccessPoint(mInterfaceName);
-                        mNwService.startAccessPoint(config, mInterfaceName);
+                        mNwService.stopAccessPoint(mSoftapInterfaceName);
+                        mNwService.startAccessPoint(config, mSoftapInterfaceName);
                     } catch (Exception e1) {
                         loge("Exception in softap re-start " + e1);
                         sendMessage(CMD_START_AP_FAILURE);
@@ -2113,18 +2104,22 @@ public class WifiStateMachine extends StateMachine {
              */
             new Thread(new Runnable() {
                 public void run() {
+                    int type = 1;
+
                     mWakeLock.acquire();
                     //enabling state
                     switch(message.arg1) {
                         case WIFI_STATE_ENABLING:
                             setWifiState(WIFI_STATE_ENABLING);
+			    type = 1;
                             break;
                         case WIFI_AP_STATE_ENABLING:
                             setWifiApState(WIFI_AP_STATE_ENABLING);
+			    type = 2;
                             break;
                     }
 
-                    if(mWifiNative.loadDriver()) {
+                    if(mWifiNative.loadDriver(type)) {
                         if (DBG) log("Driver load successful");
                         sendMessage(CMD_LOAD_DRIVER_SUCCESS);
                     } else {
@@ -2246,9 +2241,21 @@ public class WifiStateMachine extends StateMachine {
             message.copyFrom(getCurrentMessage());
             new Thread(new Runnable() {
                 public void run() {
+                    int type = 1;
+
                     if (DBG) log(getName() + message.toString() + "\n");
                     mWakeLock.acquire();
-                    if(mWifiNative.unloadDriver()) {
+                    switch(message.arg1) {
+                       case WIFI_STATE_DISABLED:
+                       case WIFI_STATE_UNKNOWN:
+                           type = 1;
+                           break;
+                       case WIFI_AP_STATE_DISABLED:
+                       case WIFI_AP_STATE_FAILED:
+                           type = 2;
+                           break;
+                    }
+                    if(mWifiNative.unloadDriver(type)) {
                         if (DBG) log("Driver unload successful");
                         sendMessage(CMD_UNLOAD_DRIVER_SUCCESS);
 
@@ -2819,12 +2826,11 @@ public class WifiStateMachine extends StateMachine {
                     break;
                 case CMD_SET_COUNTRY_CODE:
                     String country = (String) message.obj;
-                    String countryCode = country != null ? country.toUpperCase() : null;
-                    if (DBG) log("set country code " + countryCode);
-                    if (mWifiNative.setCountryCode(countryCode)) {
-                        mCountryCode = countryCode;
+                    if (DBG) log("set country code " + country);
+                    if (mWifiNative.setCountryCode(country.toUpperCase())) {
+                        mCountryCode = country;
                     } else {
-                        loge("Failed to set country code " + countryCode);
+                        loge("Failed to set country code " + country);
                     }
                     break;
                 case CMD_SET_FREQUENCY_BAND:
@@ -3435,10 +3441,6 @@ public class WifiStateMachine extends StateMachine {
               case CMD_SET_HIGH_PERF_MODE:
                   deferMessage(message);
                   break;
-                  /* Defer scan request since we should not switch to other channels at DHCP */
-              case CMD_START_SCAN:
-                  deferMessage(message);
-                  break;
               default:
                   return NOT_HANDLED;
           }
@@ -3915,7 +3917,7 @@ public class WifiStateMachine extends StateMachine {
 
                     /* We have not tethered at this point, so we just shutdown soft Ap */
                     try {
-                        mNwService.stopAccessPoint(mInterfaceName);
+                        mNwService.stopAccessPoint(mSoftapInterfaceName);
                     } catch(Exception e) {
                         loge("Exception in stopAccessPoint()");
                     }
@@ -4043,7 +4045,7 @@ public class WifiStateMachine extends StateMachine {
                     if (isWifiTethered(stateChange.active)) break;
 
                     try {
-                        mNwService.stopAccessPoint(mInterfaceName);
+                        mNwService.stopAccessPoint(mSoftapInterfaceName);
                     } catch(Exception e) {
                         loge("Exception in stopAccessPoint()");
                     }
@@ -4053,7 +4055,7 @@ public class WifiStateMachine extends StateMachine {
                     if (message.arg1 == mTetherToken) {
                         loge("Failed to get tether update, force stop access point");
                         try {
-                            mNwService.stopAccessPoint(mInterfaceName);
+                            mNwService.stopAccessPoint(mSoftapInterfaceName);
                         } catch(Exception e) {
                             loge("Exception in stopAccessPoint()");
                         }
@@ -4128,3 +4130,4 @@ public class WifiStateMachine extends StateMachine {
         Log.e(TAG, s);
     }
 }
+

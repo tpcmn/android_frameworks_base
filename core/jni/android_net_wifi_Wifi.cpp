@@ -107,13 +107,23 @@ static jboolean android_net_wifi_isDriverLoaded(JNIEnv* env, jobject)
     return (jboolean)(::is_wifi_driver_loaded() == 1);
 }
 
-static jboolean android_net_wifi_loadDriver(JNIEnv* env, jobject)
+static jboolean android_net_wifi_loadDriver(JNIEnv* env, jobject, int type)
 {
+#ifdef WIFI_AP_HAS_OWN_DRIVER
+    if(type == 2) {
+	return (jboolean)(::hotspot_load_driver() == 0);
+    }
+#endif
     return (jboolean)(::wifi_load_driver() == 0);
 }
 
-static jboolean android_net_wifi_unloadDriver(JNIEnv* env, jobject)
+static jboolean android_net_wifi_unloadDriver(JNIEnv* env, jobject, int type)
 {
+#ifdef WIFI_AP_HAS_OWN_DRIVER
+    if(type == 2) {
+	return (jboolean)(::hotspot_unload_driver() == 0);
+    }
+#endif
     return (jboolean)(::wifi_unload_driver() == 0);
 }
 
@@ -190,10 +200,7 @@ static jstring android_net_wifi_doStringCommand(JNIEnv* env, jobject, jstring jI
     return doStringCommand(env, ifname.c_str(), "%s", command.c_str());
 }
 
-static jboolean android_net_wifi_setMode(JNIEnv* env, jobject, jint type)
-{
-    return (jboolean)(::wifi_set_mode(type) == 0);
-}
+
 
 // ----------------------------------------------------------------------------
 
@@ -203,9 +210,9 @@ static jboolean android_net_wifi_setMode(JNIEnv* env, jobject, jint type)
 static JNINativeMethod gWifiMethods[] = {
     /* name, signature, funcPtr */
 
-    { "loadDriver", "()Z",  (void *)android_net_wifi_loadDriver },
+    { "loadDriver", "(I)Z",  (void *)android_net_wifi_loadDriver },
     { "isDriverLoaded", "()Z",  (void *)android_net_wifi_isDriverLoaded },
-    { "unloadDriver", "()Z",  (void *)android_net_wifi_unloadDriver },
+    { "unloadDriver", "(I)Z",  (void *)android_net_wifi_unloadDriver },
     { "startSupplicant", "(Z)Z",  (void *)android_net_wifi_startSupplicant },
     { "killSupplicant", "(Z)Z",  (void *)android_net_wifi_killSupplicant },
     { "connectToSupplicant", "(Ljava/lang/String;)Z",
@@ -220,7 +227,6 @@ static JNINativeMethod gWifiMethods[] = {
             (void*) android_net_wifi_doIntCommand },
     { "doStringCommand", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
             (void*) android_net_wifi_doStringCommand },
-    { "setMode", "(I)Z", (void*) android_net_wifi_setMode},
 };
 
 int register_android_net_wifi_WifiManager(JNIEnv* env)
@@ -230,3 +236,4 @@ int register_android_net_wifi_WifiManager(JNIEnv* env)
 }
 
 }; // namespace android
+
